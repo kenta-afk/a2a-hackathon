@@ -230,7 +230,6 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
     except Exception as e:
         print(f"レストラン検索中にエラーが発生しました: {str(e)}")
         return fallback_restaurant_data(location, search_radius, tool_context)
-
 def fallback_restaurant_data(location, search_radius, tool_context=None):
     """APIが失敗した場合のフォールバックとしてサンプルレストランデータを生成する"""
     print("APIエラーのためサンプルデータを使用します")
