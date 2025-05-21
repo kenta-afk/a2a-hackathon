@@ -11,11 +11,11 @@ from typing import Optional, Dict, List, Any
 # Load environment variables
 load_dotenv()
 
-# Get Google Maps API key from environment variables
-API_KEY = os.getenv('GOOGLE_MAPS_API_KEY')
+# Get Hotpepper API key from environment variables
+API_KEY = os.getenv('HOTPEPPER_API_KEY')
 
 # Constants
-DEFAULT_RADIUS = 1000  # デフォルト検索半径（メートル）
+DEFAULT_RADIUS = 3  # デフォルト検索半径（3=1000m）
 WALKING_SPEED = 1.4  # 平均歩行速度（メートル/秒）
 
 def estimate_travel_time(distance_meters: float) -> int:
@@ -44,7 +44,7 @@ def calculate_search_radius(break_time_minutes: int) -> int:
         break_time_minutes: 利用可能な休憩時間（分）
         
     Returns:
-        検索半径（メートル）
+        検索半径（1-5の整数値）
     """
     # 食事時間の割り当て（通常30〜40分）
     eating_time = min(40, break_time_minutes * 0.7)
@@ -55,10 +55,18 @@ def calculate_search_radius(break_time_minutes: int) -> int:
     # 移動時間を距離に変換
     max_distance = travel_time_one_way * 60 * WALKING_SPEED
     
-    # 適切な範囲に制限
-    radius = min(2000, max(500, math.floor(max_distance)))
-    
-    return radius
+    # 適切な範囲に対応するHotpepper API検索範囲コードを返す
+    # 1=300m、2=500m、3=1000m、4=2000m、5=3000m
+    if max_distance <= 300:
+        return 1
+    elif max_distance <= 500:
+        return 2
+    elif max_distance <= 1000:
+        return 3
+    elif max_distance <= 2000:
+        return 4
+    else:
+        return 5
 
 def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Optional[int] = None, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """
@@ -75,9 +83,9 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
             - search_parameters: 検索に使用されたパラメータ
     """
     if not API_KEY:
-        print("Google Maps APIキーが設定されていません")
+        print("Hotpepper APIキーが設定されていません")
         return {
-            "error": "Google Maps APIキーが設定されていません",
+            "error": "Hotpepper APIキーが設定されていません",
             "restaurants": [],
             "search_parameters": {}
         }
@@ -108,27 +116,41 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
     else:
         search_radius = DEFAULT_RADIUS
     
-    # Google Places API検索パラメータ
-    url = (
-        "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-        f"?location={location.get('latitude')},{location.get('longitude')}"
-        f"&radius={search_radius}"
-        f"&type=restaurant&language=ja&key={API_KEY}&opennow=true"
-    )
+    # Hotpepper API検索パラメータ
+    url = "https://webservice.recruit.co.jp/hotpepper/gourmet/v1/"
+    
+    params = {
+        "key": API_KEY,
+        "lat": location.get('latitude'),
+        "lng": location.get('longitude'),
+        "range": search_radius,  # 検索範囲：1〜5（1=300m、2=500m、3=1000m、4=2000m、5=3000m）
+        "order": 4,  # 評価順（1=標準、4=おすすめ順）
+        "count": 10,  # 最大件数
+        "format": "json"
+    }
     
     # 料理の種類が指定されていれば追加
     if cuisine_preference:
-        url += f"&keyword={cuisine_preference}"
+        params["keyword"] = cuisine_preference
+    
+    # 予算コードの変換（Google APIの価格帯からHotpepper APIの予算コードへ）
+    budget_map = {
+        0: "B001",  # 無料 -> ~500円
+        1: "B002,B003",  # 格安 -> 501〜1500円
+        2: "B004,B005",  # 手頃 -> 1501〜3000円
+        3: "B006,B007,B008",  # やや高級 -> 3001〜7000円
+        4: "B009,B010,B011,B012,B013"  # 高級 -> 7001円以上
+    }
     
     # 価格帯が指定されていれば追加
-    if price_level is not None:
-        url += f"&maxprice={min(4, max(0, price_level))}"
+    if price_level is not None and price_level in budget_map:
+        params["budget"] = budget_map[price_level]
     
-    print(f"レストラン検索URL: {url}")
-    print("Google Places APIでレストランを検索中...")
+    print(f"レストラン検索パラメータ: {params}")
+    print("Hotpepper APIでレストランを検索中...")
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, params=params)
         
         if response.status_code != 200:
             print(f"APIリクエスト失敗: ステータスコード {response.status_code}")
@@ -137,22 +159,23 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
         # レスポンスをJSONに変換
         data = response.json()
         
-        # APIステータスをチェック
-        if data.get("status") != "OK":
-            error_msg = data.get("error_message", "エラーメッセージなし")
-            print(f"APIエラー: {data.get('status')}, {error_msg}")
+        # 検索結果を処理
+        results = data.get("results", {})
+        shops = results.get("shop", [])
+        
+        if not shops:
+            print("検索結果が見つかりませんでした")
             return fallback_restaurant_data(location, search_radius, tool_context)
         
-        # 検索結果を処理
         restaurants = []
-        for place in data.get("results", []):
-            # 場所の座標を取得
-            place_lat = place["geometry"]["location"]["lat"]
-            place_lng = place["geometry"]["location"]["lng"]
+        for shop in shops:
+            # 店舗の座標を取得
+            shop_lat = float(shop["lat"])
+            shop_lng = float(shop["lng"])
             
             # 直線距離を計算（ハーバサイン公式）
             lat1, lon1 = map(math.radians, [location.get('latitude'), location.get('longitude')])
-            lat2, lon2 = map(math.radians, [place_lat, place_lng])
+            lat2, lon2 = map(math.radians, [shop_lat, shop_lng])
             dlon = lon2 - lon1
             dlat = lat2 - lat1
             a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
@@ -164,28 +187,26 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
             
             # レストラン情報を構築
             restaurant = {
-                "name": place.get("name", "名前なし"),
-                "address": place.get("vicinity", "住所不明"),
-                "rating": place.get("rating", "評価なし"),
-                "user_ratings_total": place.get("user_ratings_total", 0),
-                "price_level": place.get("price_level", "不明"),
+                "name": shop.get("name", "名前なし"),
+                "address": shop.get("address", "住所不明"),
+                "catch": shop.get("catch", ""),
+                "genre": shop.get("genre", {}).get("name", ""),
+                "budget": shop.get("budget", {}).get("average", "予算情報なし"),
                 "distance_meters": round(distance),
                 "estimated_travel_time_minutes": travel_time,
-                "place_id": place.get("place_id", ""),
-                "maps_url": f"https://www.google.com/maps/place/?q=place_id:{place.get('place_id')}"
+                "shop_id": shop.get("id", ""),
+                "photo": shop.get("photo", {}).get("pc", {}).get("l", ""),
+                "urls": shop.get("urls", {}).get("pc", ""),
+                "open": shop.get("open", "営業時間情報なし"),
+                "close": shop.get("close", ""),
+                "maps_url": f"https://www.google.com/maps/search/?api=1&query={shop.get('name')} {shop.get('address')}"
             }
             
             restaurants.append(restaurant)
-            print(f"🍴 {restaurant['name']} ({restaurant['rating']}): {restaurant['address']} - 徒歩{travel_time}分")
+            print(f"🍴 {restaurant['name']} ({restaurant['genre']}): {restaurant['address']} - 徒歩{travel_time}分")
         
-        # レストランを評価（70%）と距離（30%）で並べ替え
-        restaurants.sort(key=lambda x: (
-            -(float(x["rating"]) if isinstance(x["rating"], (int, float)) else 0) * 0.7 +
-            x["estimated_travel_time_minutes"] * 0.3
-        ))
-        
-        # 結果を10件に制限
-        restaurants = restaurants[:10]
+        # レストランを距離で並べ替え
+        restaurants.sort(key=lambda x: x["estimated_travel_time_minutes"])
         
         # 検索結果をコンテキストに保存
         if tool_context:
@@ -198,7 +219,7 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
                 "location": f"{location.get('city', '不明')}, {location.get('region', '不明')}",
                 "latitude": location.get('latitude'),
                 "longitude": location.get('longitude'),
-                "radius_meters": search_radius,
+                "range": search_radius,
                 "cuisine_preference": cuisine_preference,
                 "price_level": price_level
             }
@@ -209,7 +230,7 @@ def find_restaurants(cuisine_preference: Optional[str] = None, price_level: Opti
     except Exception as e:
         print(f"レストラン検索中にエラーが発生しました: {str(e)}")
         return fallback_restaurant_data(location, search_radius, tool_context)
-        
+
 def fallback_restaurant_data(location, search_radius, tool_context=None):
     """APIが失敗した場合のフォールバックとしてサンプルレストランデータを生成する"""
     print("APIエラーのためサンプルデータを使用します")
@@ -219,118 +240,162 @@ def fallback_restaurant_data(location, search_radius, tool_context=None):
         {
             "name": "博多もつ鍋 やまや 天神店",
             "address": "福岡県福岡市中央区天神2-8-221",
-            "rating": 4.5,
-            "user_ratings_total": 1245,
-            "price_level": 3,
-            "distance_meters": round(random.uniform(200, 800)),
-            "cuisine_type": "もつ鍋",
-            "description": "福岡名物のもつ鍋が楽しめる人気店。特製のスープと新鮮なもつが絶品。"
+            "catch": "博多名物もつ鍋と明太子の美味しいお店",
+            "genre": "もつ鍋",
+            "budget": "3000円～4000円",
+            "distance_meters": 450,
+            "estimated_travel_time_minutes": 6,
+            "shop_id": "sample_1",
+            "photo": "https://imgfp.hotp.jp/IMGH/61/98/P038366198_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000989092/",
+            "open": "月～日 11:30～翌0:00",
+            "close": "不定休（要確認）",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=博多もつ鍋 やまや 天神店 福岡県福岡市中央区天神2-8-221"
         },
         {
             "name": "一蘭 天神店",
             "address": "福岡県福岡市中央区天神3-2-13",
-            "rating": 4.3,
-            "user_ratings_total": 2156,
-            "price_level": 2,
-            "distance_meters": round(random.uniform(300, 900)),
-            "cuisine_type": "ラーメン",
-            "description": "豚骨ラーメンで有名な福岡を代表する人気チェーン。個室型の席が特徴。"
+            "catch": "一蘭特製「天然とんこつラーメン」",
+            "genre": "ラーメン",
+            "budget": "1000円～1500円",
+            "distance_meters": 520,
+            "estimated_travel_time_minutes": 7,
+            "shop_id": "sample_2",
+            "photo": "https://imgfp.hotp.jp/IMGH/21/04/P038072104_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000010292/",
+            "open": "24時間営業",
+            "close": "年中無休",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=一蘭 天神店 福岡県福岡市中央区天神3-2-13"
         },
         {
             "name": "鮨処 銀座 福榮 福岡店",
             "address": "福岡県福岡市中央区大名1-15-11",
-            "rating": 4.7,
-            "user_ratings_total": 876,
-            "price_level": 4,
-            "distance_meters": round(random.uniform(400, 1000)),
-            "cuisine_type": "寿司",
-            "description": "厳選された新鮮な海の幸を使った高級寿司店。職人の技が光る。"
+            "catch": "厳選食材の江戸前鮨を楽しむ",
+            "genre": "寿司",
+            "budget": "5000円～10000円",
+            "distance_meters": 680,
+            "estimated_travel_time_minutes": 10,
+            "shop_id": "sample_3",
+            "photo": "https://imgfp.hotp.jp/IMGH/58/27/P038715827_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ001214309/",
+            "open": "11:30～14:00 17:00～23:00",
+            "close": "月曜日（祝日の場合は翌日）",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=鮨処 銀座 福榮 福岡店 福岡県福岡市中央区大名1-15-11"
         },
         {
             "name": "焼鳥 笑まる 博多駅前店",
             "address": "福岡県福岡市博多区博多駅前3-21-12",
-            "rating": 4.4,
-            "user_ratings_total": 1123,
-            "price_level": 3,
-            "distance_meters": round(random.uniform(500, 1100)),
-            "cuisine_type": "焼鳥",
-            "description": "素材にこだわった炭火焼の焼鳥が人気。店内は活気があり、博多の雰囲気が楽しめる。"
+            "catch": "名物！炭火焼きの極上焼き鳥",
+            "genre": "焼鳥",
+            "budget": "3000円～4000円",
+            "distance_meters": 750,
+            "estimated_travel_time_minutes": 11,
+            "shop_id": "sample_4",
+            "photo": "https://imgfp.hotp.jp/IMGH/24/43/P037512443_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ001234567/",
+            "open": "17:00～翌0:00",
+            "close": "日曜日",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=焼鳥 笑まる 博多駅前店 福岡県福岡市博多区博多駅前3-21-12"
         },
         {
             "name": "水炊き 博多華味鳥 中洲本店",
             "address": "福岡県福岡市博多区中洲5-4-6",
-            "rating": 4.6,
-            "user_ratings_total": 1532,
-            "price_level": 3,
-            "distance_meters": round(random.uniform(600, 1200)),
-            "cuisine_type": "水炊き",
-            "description": "福岡名物の水炊きを提供する名店。特製の白濁スープと鶏肉の旨みが絶品。"
+            "catch": "厳選された九州の水炊き料理専門店",
+            "genre": "水炊き",
+            "budget": "4000円～6000円",
+            "distance_meters": 850,
+            "estimated_travel_time_minutes": 13,
+            "shop_id": "sample_5",
+            "photo": "https://imgfp.hotp.jp/IMGH/86/35/P038318635_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000974235/",
+            "open": "11:00～15:00 17:00～23:00",
+            "close": "不定休",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=水炊き 博多華味鳥 中洲本店 福岡県福岡市博多区中洲5-4-6"
         },
         {
             "name": "ひょうたん寿司 福岡本店",
             "address": "福岡県福岡市中央区天神2-13-18",
-            "rating": 4.2,
-            "user_ratings_total": 987,
-            "price_level": 3,
-            "distance_meters": round(random.uniform(300, 850)),
-            "cuisine_type": "寿司",
-            "description": "地元で人気の寿司店。リーズナブルな価格で本格的な寿司が楽しめる。"
+            "catch": "本格寿司をリーズナブルに楽しめる",
+            "genre": "寿司",
+            "budget": "2000円～3000円",
+            "distance_meters": 480,
+            "estimated_travel_time_minutes": 7,
+            "shop_id": "sample_6",
+            "photo": "https://imgfp.hotp.jp/IMGH/67/84/P037406784_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000974631/",
+            "open": "11:00～22:30",
+            "close": "年中無休",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=ひょうたん寿司 福岡本店 福岡県福岡市中央区天神2-13-18"
         },
         {
             "name": "博多 十和蔵",
             "address": "福岡県福岡市博多区中洲3-7-14",
-            "rating": 4.3,
-            "user_ratings_total": 756,
-            "price_level": 3,
-            "distance_meters": round(random.uniform(700, 1300)),
-            "cuisine_type": "居酒屋",
-            "description": "新鮮な魚介類と豊富な日本酒が楽しめる居酒屋。地元の食材を生かした料理が豊富。"
+            "catch": "博多の新鮮な海鮮と地酒を満喫",
+            "genre": "居酒屋",
+            "budget": "4000円～5000円",
+            "distance_meters": 920,
+            "estimated_travel_time_minutes": 14,
+            "shop_id": "sample_7",
+            "photo": "https://imgfp.hotp.jp/IMGH/55/04/P038595504_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000974512/",
+            "open": "17:00～翌1:00",
+            "close": "月曜日",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=博多 十和蔵 福岡県福岡市博多区中洲3-7-14"
         },
         {
             "name": "博多 一風堂 本店",
             "address": "福岡県福岡市中央区薬院1-1-12",
-            "rating": 4.4,
-            "user_ratings_total": 1876,
-            "price_level": 2,
-            "distance_meters": round(random.uniform(800, 1400)),
-            "cuisine_type": "ラーメン",
-            "description": "世界的に有名な博多ラーメン店。独自のスープと太さの異なる麺が選べる。"
+            "catch": "世界に誇る博多豚骨ラーメン",
+            "genre": "ラーメン",
+            "budget": "1000円～1500円",
+            "distance_meters": 1200,
+            "estimated_travel_time_minutes": 18,
+            "shop_id": "sample_8",
+            "photo": "https://imgfp.hotp.jp/IMGH/70/98/P037407098_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000010007/",
+            "open": "11:00～翌3:00",
+            "close": "年中無休",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=博多 一風堂 本店 福岡県福岡市中央区薬院1-1-12"
         },
         {
             "name": "たつみ寿司 天神店",
             "address": "福岡県福岡市中央区今泉1-9-12",
-            "rating": 4.1,
-            "user_ratings_total": 654,
-            "price_level": 2,
-            "distance_meters": round(random.uniform(400, 950)),
-            "cuisine_type": "寿司",
-            "description": "ランチタイムのにぎり寿司セットがリーズナブルで人気。アットホームな雰囲気が特徴。"
+            "catch": "ランチ人気のリーズナブル寿司",
+            "genre": "寿司",
+            "budget": "1500円～2000円",
+            "distance_meters": 580,
+            "estimated_travel_time_minutes": 8,
+            "shop_id": "sample_9",
+            "photo": "https://imgfp.hotp.jp/IMGH/93/46/P038619346_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000974358/",
+            "open": "11:30～22:00",
+            "close": "水曜日",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=たつみ寿司 天神店 福岡県福岡市中央区今泉1-9-12"
         },
         {
             "name": "やま中 天神本店",
             "address": "福岡県福岡市中央区大名1-11-25",
-            "rating": 4.5,
-            "user_ratings_total": 1023,
-            "price_level": 3,
-            "distance_meters": round(random.uniform(500, 1050)),
-            "cuisine_type": "うどん",
-            "description": "コシのある手打ちうどんが評判。季節の食材を使ったメニューも豊富で、地元民に愛されている。"
+            "catch": "博多の名物出汁うどん",
+            "genre": "うどん",
+            "budget": "1000円～1500円",
+            "distance_meters": 620,
+            "estimated_travel_time_minutes": 9,
+            "shop_id": "sample_10",
+            "photo": "https://imgfp.hotp.jp/IMGH/65/98/P038426598_238.jpg",
+            "urls": "https://www.hotpepper.jp/strJ000974159/",
+            "open": "11:00～22:00",
+            "close": "年中無休",
+            "maps_url": "https://www.google.com/maps/search/?api=1&query=やま中 天神本店 福岡県福岡市中央区大名1-11-25"
         }
     ]
     
-    # 各レストランに推定所要時間を追加
+    # レストランをすでに所要時間を含んでいるので、改めて出力
     for restaurant in sample_restaurants:
-        travel_time = estimate_travel_time(restaurant["distance_meters"])
-        restaurant["estimated_travel_time_minutes"] = travel_time
-        restaurant["place_id"] = f"sample_{hash(restaurant['name']) % 10000}"
-        restaurant["maps_url"] = f"https://www.google.com/maps/search/?api=1&query={restaurant['name']} {restaurant['address']}"
-        print(f"🍴 {restaurant['name']} ({restaurant['rating']}): {restaurant['address']} - 徒歩{travel_time}分")
+        travel_time = restaurant["estimated_travel_time_minutes"]
+        print(f"🍴 {restaurant['name']} ({restaurant['genre']}): {restaurant['address']} - 徒歩{travel_time}分")
     
-    # レストランを評価（70%）と距離（30%）で並べ替え
-    sample_restaurants.sort(key=lambda x: (
-        -(float(x["rating"]) if isinstance(x["rating"], (int, float)) else 0) * 0.7 +
-        x["estimated_travel_time_minutes"] * 0.3
-    ))
+    # レストランを距離で並べ替え
+    sample_restaurants.sort(key=lambda x: x["estimated_travel_time_minutes"])
     
     # 検索結果をコンテキストに保存
     if tool_context:
@@ -338,13 +403,13 @@ def fallback_restaurant_data(location, search_radius, tool_context=None):
     
     # 検索結果と使用したパラメータを返す
     return {
-        "notice": "Google Places APIのエラーのため、サンプルデータを使用しています。",
+        "notice": "Hotpepper APIのエラーのため、サンプルデータを使用しています。",
         "restaurants": sample_restaurants,
         "search_parameters": {
             "location": f"{location.get('city', '福岡市')}, {location.get('region', '福岡県')}",
             "latitude": location.get('latitude'),
             "longitude": location.get('longitude'),
-            "radius_meters": search_radius,
+            "range": search_radius,
             "using_sample_data": True
         }
     }
