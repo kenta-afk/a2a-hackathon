@@ -7,7 +7,7 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from google.adk.runners import Runner
-from calendar_agent.local_agent import local_agent
+from calendar_agent.calendar_agent import local_agent
 import google.generativeai as genai
 
 # .envファイルから環境変数を読み込む

@@ -1,10 +1,10 @@
-"""Local agent that retrieves calendar events using Google Calendar API."""
+"""Googleカレンダーの予定取得エージェント"""
 
 from google.adk.agents import Agent
 from calendar_agent.tools.calendar_tool import get_calendar_events
 
-# カレンダーエージェントを作成
-local_agent = Agent(
+# カレンダーエージェント
+calendar_agent = Agent(
     name="calendar_agent",
     model="gemini-2.0-flash",
     description="指定された日付のGoogleカレンダー予定を取得し、整理して表示するエージェント",
@@ -52,12 +52,11 @@ local_agent = Agent(
 )
 
 def main():
-    """Run the calendar agent interactively for testing."""
     from google.adk.runners import Runner
     import asyncio
     
     runner = Runner()
-    asyncio.run(runner.run_interactive(local_agent))
+    asyncio.run(runner.run_interactive(calendar_agent))
 
 if __name__ == "__main__":
     main()

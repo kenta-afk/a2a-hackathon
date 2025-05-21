@@ -1,7 +1,6 @@
 """Main agent entrypoint for ADK CLI."""
 
-# Import the local agent as the root agent for ADK CLI
-from lunch_agent.local_agent import local_agent
+from lunch_agent.lunch_agent import lunch_agent
 
-# Export the local agent as the root agent for ADK CLI
-root_agent = local_agent
+# エージェントの定義
+root_agent = lunch_agent

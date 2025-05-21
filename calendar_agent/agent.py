@@ -1,7 +1,6 @@
 """Main agent entrypoint for ADK CLI."""
 
-# Import the local agent as the root agent for ADK CLI
-from calendar_agent.local_agent import local_agent
+from calendar_agent.calendar_agent import calendar_agent
 
-# Export the local agent as the root agent for ADK CLI
-root_agent = local_agent
+# エージェントの定義
+root_agent = calendar_agent
