@@ -1,7 +1,7 @@
 """Remote break time prediction agent."""
 
 from google.adk.agents import Agent
-from lunch_recommendation_agent.tools.break_prediction_tool import predict_break_duration
+from lunch_agent.tools.break_prediction_tool import predict_break_duration
 
 # Create the remote break time prediction agent
 break_prediction_agent = Agent(

@@ -2,8 +2,8 @@
 
 from google.adk.agents import Agent
 from google.adk.tools import transfer_to_agent
-from lunch_recommendation_agent.tools.location_tool import get_current_location
-from lunch_recommendation_agent.tools.restaurant_search_tool import find_restaurants
+from lunch_agent.tools.location_tool import get_current_location
+from lunch_agent.tools.restaurant_search_tool import find_restaurants
 
 # Create local agent that will use the location and restaurant search tools
 local_agent = Agent(
